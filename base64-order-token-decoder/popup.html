@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Order Token Base64 Decoder</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header class="hdr">
+    <h1>Base64 Order Token Decoder</h1>
+    <p class="sub">Paste a base64 <code>ordertoken</code> to see it in normal readable form.</p>
+  </header>
+
+  <section class="card">
+    <label for="input" class="lbl">Encoded token (base64)</label>
+    <textarea id="input" spellcheck="false" autocomplete="off"
+      placeholder="MzM4OSMyMDI1IzM0IzEkJDM4NjIxODAjODYyMTk0ODkjRE1FIzI3NTU2JCQzMzg5IzM4NjIxODAjMjc1NTYjMQ=="></textarea>
+
+    <div class="btns">
+      <button id="decodeBtn" class="btn primary" title="Decode the token (Ctrl+Enter)">Decode</button>
+      <button id="pasteBtn" class="btn" title="Paste from clipboard">📋 Paste</button>
+      <button id="sampleBtn" class="btn" title="Load the sample ordertoken">Sample</button>
+      <button id="clearBtn" class="btn ghost" title="Clear input &amp; results">Clear</button>
+    </div>
+  </section>
+
+  <section class="card" id="resultCard" hidden>
+    <div class="row-between">
+      <h2 class="card-title">Decoded result</h2>
+      <span id="badge" class="badge ok">valid base64</span>
+    </div>
+
+    <label class="lbl small" for="decoded">Decoded ordertoken</label>
+    <div class="copywrap">
+      <textarea id="decoded" readonly spellcheck="false"></textarea>
+      <button class="mini" data-copy-target="decoded" title="Copy decoded string">⧉</button>
+    </div>
+
+    <div id="fields" class="grid"></div>
+
+    <details id="segDetails" hidden>
+      <summary>All segments (<span id="segCount">0</span>) — separated by <code>$$</code>, fields by <code>#</code></summary>
+      <div id="segments"></div>
+    </details>
+
+    <details id="rawDetails" hidden>
+      <summary id="rawSummary">Extra / unparsed fields</summary>
+      <div id="extra"></div>
+    </details>
+  </section>
+
+  <section class="card error" id="errorCard" hidden>
+    <div class="err-title" id="errTitle">Could not decode</div>
+    <div class="err-msg" id="errMsg"></div>
+  </section>
+
+  <footer class="ftr">Runs fully offline · nothing is sent anywhere · last token is remembered</footer>
+
+  <script src="shared.js"></script>
+  <script src="decoder-ui.js"></script>
+</body>
+</html>

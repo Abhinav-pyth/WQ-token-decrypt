@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Order Token Base64 Decoder",
+  "version": "1.1.0",
+  "description": "Decodes base64 ordertokens into a readable form (FacilityId, PatientId, VisitId, WQ order number, Year, Week). Right-click any selected token on a page and choose “Decode Base64 / ordertoken”, or paste it in the popup.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Decode Base64 Order Token",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["contextMenus", "storage", "clipboardRead", "scripting"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "offline_enabled": true
+}

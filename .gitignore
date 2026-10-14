@@ -1,0 +1,5 @@
+*.zipnode_modules/
+.next/
+dist/
+build/
+*.log
