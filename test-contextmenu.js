@@ -7,7 +7,9 @@ const path = require("path");
 const { JSDOM } = require("jsdom");
 
 const DIR = path.join(__dirname, "base64-order-token-decoder");
+const tokensJs = fs.readFileSync(path.join(DIR, "tokens.js"), "utf8");
 const sharedJs = fs.readFileSync(path.join(DIR, "shared.js"), "utf8");
+const domJs = fs.readFileSync(path.join(DIR, "dom.js"), "utf8");
 const uiJs = fs.readFileSync(path.join(DIR, "decoder-ui.js"), "utf8");
 const bgJs = fs.readFileSync(path.join(DIR, "background.js"), "utf8");
 const decodeHtml = fs.readFileSync(path.join(DIR, "decode.html"), "utf8");
@@ -42,28 +44,51 @@ const chromeBg = {
     onClicked: { addListener: (f) => listeners.menuClick.push(f) }
   },
   storage: {
+    // Chrome MV3-style: storage methods support both callbacks and promises.
     session: {
       get: (keys, cb) => {
-        let out;
-        if (keys === null) out = Object.assign({}, sessionStore);
-        else { out = {}; (keys || []).forEach((k) => { if (k in sessionStore) out[k] = sessionStore[k]; }); }
-        cb(out);
+        const out = readSession(keys);
+        if (cb) { cb(out); return undefined; }
+        return Promise.resolve(out);
       },
-      set: (obj, cb) => { Object.assign(sessionStore, obj); cb && cb(); },
-      remove: (keys, cb) => { [].concat(keys).forEach((k) => delete sessionStore[k]); cb && cb(); }
+      set: (obj, cb) => {
+        Object.assign(sessionStore, obj);
+        if (cb) { cb(); return undefined; }
+        return Promise.resolve();
+      },
+      remove: (keys, cb) => {
+        [].concat(keys).forEach((k) => delete sessionStore[k]);
+        if (cb) { cb(); return undefined; }
+        return Promise.resolve();
+      }
     }
   },
-  tabs: { create: (opts) => { createdTabs.push(opts); } },
+  tabs: { create: (opts) => { createdTabs.push(opts); return Promise.resolve({}); } },
   scripting: {
-    executeScript: (inj, cb) => { executedScripts.push(inj); cb([{ result: "" }]); } // no DOM in SW sim
+    executeScript: (inj, cb) => {
+      executedScripts.push(inj);
+      const res = [{ result: "" }]; // no DOM in SW sim
+      if (cb) { cb(res); return undefined; }
+      return Promise.resolve(res);
+    }
   }
 };
+
+function readSession(keys) {
+  if (keys === null || keys === undefined) return Object.assign({}, sessionStore);
+  const out = {};
+  [].concat(keys).forEach((k) => { if (k in sessionStore) out[k] = sessionStore[k]; });
+  return out;
+}
 
 global.chrome = chromeBg;
 // atob is needed only inside page scripts; provide for safety
 global.self = global;
 eval(bgJs);
 
+const flush = () => new Promise((r) => setTimeout(r, 20));
+
+(async () => {
 check("menu registered on install", listeners.install.length === 1);
 listeners.install[0]();
 check("context menu item created", !!menuRegistered && /Decode Base64/i.test(menuRegistered.title), JSON.stringify(menuRegistered));
@@ -74,6 +99,7 @@ check("message listener attached", listeners.message.length === 1);
 
 /* ---- simulate right-click on a selection in tab 42 ---- */
 listeners.menuClick[0]({ menuItemId: "otd-decode-selection", selectionText: SAMPLE }, { id: 42, url: "https://example.com/orders" });
+await flush(); // the (async) service-worker handler stores & opens via promises
 check("selection stored under pending:42", sessionStore["pending:42"] && sessionStore["pending:42"].text === SAMPLE);
 check("decoder tab opened with ?tab=42",
   createdTabs.length === 1 && /\?tab=42$/.test(createdTabs[0].url) && createdTabs[0].url.includes("decode.html"),
@@ -81,11 +107,13 @@ check("decoder tab opened with ?tab=42",
 
 /* ---- simulate right-click with NO selectionText (editable fallback) in tab 7 ---- */
 listeners.menuClick[0]({ menuItemId: "otd-decode-selection" }, { id: 7, url: "https://example.com/form" });
+await flush();
 check("scripting fallback invoked for http page", executedScripts.length === 1 && executedScripts[0].target.tabId === 7);
 check("decoder tab still opened when injected text empty", createdTabs.length === 2 && /\?tab=7$/.test(createdTabs[1].url));
 
 /* ---- restricted page (chrome://) -> just open decoder, no injection ---- */
 listeners.menuClick[0]({ menuItemId: "otd-decode-selection" }, { id: 9, url: "chrome://settings" });
+await flush();
 check("no injection attempted on chrome:// page", executedScripts.length === 1);
 check("decoder tab opened for chrome:// page too", createdTabs.length === 3 && /\?tab=9$/.test(createdTabs[2].url));
 
@@ -109,10 +137,13 @@ window.chrome = {
   tabs: { query: () => {} }
 };
 
+window.eval(tokensJs);
 window.eval(sharedJs);
+window.eval(domJs);
 window.eval(uiJs);
 
-setTimeout(() => {
+await flush(); // let the async getPending round-trip resolve before asserting
+
   const doc = window.document;
   const $ = (id) => doc.getElementById(id);
   const fieldMap = () => {
@@ -134,6 +165,7 @@ setTimeout(() => {
   check("Year = 2025", f["Year"] === "2025");
   check("Week = 34", f["Week"] === "34");
   check("subtitle mentions right-click", /Right-clicked/i.test($("subtitle").textContent), $("subtitle").textContent);
+  await flush(); // background removes the one-shot entry asynchronously
   check("pending entry consumed (one-shot)", !("pending:42" in sessionStore), JSON.stringify(Object.keys(sessionStore)));
 
   /* second right-click on garbage -> friendly error */
@@ -143,12 +175,12 @@ setTimeout(() => {
   w2.URLSearchParams = URLSearchParams;
   w2.atob = (s) => Buffer.from(s, "base64").toString("binary");
   w2.chrome = { runtime: { sendMessage: (msg, cb) => { listeners.message.forEach((fn) => fn(msg, {}, cb)); } }, tabs: { query: () => {} } };
+  w2.eval(tokensJs);
   w2.eval(sharedJs);
+  w2.eval(domJs);
   w2.eval(uiJs);
-  setTimeout(() => {
-    check("invalid selection shows error card", w2.document.getElementById("errorCard").hidden === false);
-    check("valid token message still works after error path", true);
-    console.log(failures === 0 ? "\nALL CONTEXT-MENU TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
-    process.exit(failures === 0 ? 0 : 1);
-  }, 50);
-}, 50);
+  await flush();
+  check("invalid selection shows error card", w2.document.getElementById("errorCard").hidden === false);
+  console.log(failures === 0 ? "\nALL CONTEXT-MENU TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
+  process.exit(failures === 0 ? 0 : 1);
+})().catch((e) => { console.error(e); process.exit(1); });
