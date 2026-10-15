@@ -13,8 +13,7 @@
 
   <section class="card">
     <label for="input" class="lbl">Encoded token (base64)</label>
-    <textarea id="input" spellcheck="false" autocomplete="off"
-      placeholder="MzM4OSMyMDI1IzM0IzEkJDM4NjIxODAjODYyMTk0ODkjRE1FIzI3NTU2JCQzMzg5IzM4NjIxODAjMjc1NTYjMQ=="></textarea>
+    <textarea id="input" class="sample-placeholder" spellcheck="false" autocomplete="off"></textarea>
 
     <div class="btns">
       <button id="decodeBtn" class="btn primary" title="Decode the token (Ctrl+Enter)">Decode</button>
@@ -56,7 +55,9 @@
 
   <footer class="ftr">Runs fully offline · nothing is sent anywhere · last token is remembered</footer>
 
+  <script src="tokens.js"></script>
   <script src="shared.js"></script>
+  <script src="dom.js"></script>
   <script src="decoder-ui.js"></script>
 </body>
 </html>

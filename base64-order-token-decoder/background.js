@@ -1,133 +1,138 @@
 /* background.js (MV3 service worker)
  * Adds "Decode Base64 / ordertoken" to the right-click context menu.
- * Strategy:
- *   1. On install, register a selection + editable-context menu item.
- *   2. When clicked, grab the selected text via chrome.scripting.executeScript
- *      (works on http/https pages; no file access unless enabled).
- *   3. Store it keyed by tab id, then open decode.html?tab=<id>, which reads
- *      the value, decodes it, and clears the stored entry.
+ * Flow:
+ *   1. Register the menu item on install/startup.
+ *   2. On click, capture the selected text (from the menu info, or by
+ *      scripting into http/https pages for editable fields).
+ *   3. Store it in chrome.storage.session keyed by tab id and open
+ *      decode.html?tab=<id>, which fetches the entry once and clears it.
  */
 "use strict";
 
-var MENU_ID = "otd-decode-selection";
-var STORE_PREFIX = "pending:";
-var MAX_PENDING = 8; // keep at most this many stored selections around
+const MENU_ID = "otd-decode-selection";
+const STORE_PREFIX = "pending:";
+const MAX_PENDING = 8; // keep at most this many stored selections around
+
+const store = () => chrome.storage.session;
+const pendingKey = (tabId) => STORE_PREFIX + tabId;
 
 /* ---------- context menu registration ---------- */
-chrome.runtime.onInstalled.addListener(function () {
-  chrome.contextMenus.create({
-    id: MENU_ID,
-    title: "Decode Base64 / ordertoken",
-    contexts: ["selection", "editable"]
-  });
-});
 
-// Keep the menu available even after browser restarts.
-chrome.runtime.onStartup.addListener(function () {
+function registerMenu() {
   if (!chrome.contextMenus) return;
   chrome.contextMenus.create({
     id: MENU_ID,
     title: "Decode Base64 / ordertoken",
     contexts: ["selection", "editable"]
   });
-});
+}
+
+chrome.runtime.onInstalled.addListener(registerMenu);
+// Keep the menu available even after browser restarts.
+chrome.runtime.onStartup.addListener(registerMenu);
 
 /* ---------- helpers ---------- */
+
+// Drop the oldest pending entries when more than MAX_PENDING are stored.
+// Keys are "pending:<tabId>", so numeric sort approximates insertion order.
 function cleanupPending() {
-  chrome.storage.session.get(null, function (items) {
-    var keys = Object.keys(items || {}).filter(function (k) {
-      return k.indexOf(STORE_PREFIX) === 0;
-    });
+  store().get(null).then((items) => {
+    const keys = Object.keys(items || {})
+      .filter((k) => k.startsWith(STORE_PREFIX))
+      .sort((a, b) => Number(a.slice(STORE_PREFIX.length)) - Number(b.slice(STORE_PREFIX.length)));
     if (keys.length <= MAX_PENDING) return;
-    // Remove the oldest entries (keys are created in increasing order of use,
-    // but we can't rely on that — just drop everything beyond the limit).
-    keys.sort();
-    chrome.storage.session.remove(keys.slice(0, keys.length - MAX_PENDING));
-  });
+    return store().remove(keys.slice(0, keys.length - MAX_PENDING));
+  }).catch(() => { /* storage unavailable — nothing to clean */ });
 }
 
-function getSelectedText(tabId, cb) {
-  chrome.scripting.executeScript(
-    {
-      target: { tabId: tabId },
-      func: function () {
-        var active = document.activeElement;
-        var isEditable =
-          active &&
-          (active instanceof HTMLTextAreaElement ||
-            (active instanceof HTMLInputElement &&
-              /^(text|search|url|tel|password|email|number)$/i.test(active.type || "")));
-        if (isEditable) {
-          try {
-            var s = active.selectionStart;
-            var e = active.selectionEnd;
-            if (typeof s === "number" && typeof e === "number" && e > s) {
-              return String(active.value || "").slice(s, e);
-            }
-          } catch (err) { /* some inputs throw on selection access */ }
-        }
-        var sel = window.getSelection ? String(window.getSelection() || "") : "";
-        if (sel.trim()) return sel;
-        return isEditable ? String(active.value || "") : "";
-      }
-    },
-    function (results) {
-      var last = results && results[results.length - 1];
-      cb(last && last.result ? String(last.result) : "");
-    }
-  );
+function storeAndOpen(tabId, text) {
+  const entry = {};
+  entry[pendingKey(tabId)] = { text, ts: Date.now() };
+  cleanupPending();
+  return store().set(entry).catch(() => { /* fall through anyway */ })
+    .then(() => chrome.tabs.create({ url: chrome.runtime.getURL("decode.html?tab=" + tabId) }));
 }
 
+// Just open the decoder page; it will invite a manual paste.
 function openDecoderTab(tabId) {
-  chrome.tabs.create({ url: chrome.runtime.getURL("decode.html?tab=" + tabId) });
+  return chrome.tabs.create({ url: chrome.runtime.getURL("decode.html?tab=" + tabId) });
 }
+
+// Injected into the page: prefer an explicit selection inside an editable
+// field, then the normal text selection, then the whole field value.
+function grabTextFromPage() {
+  const active = document.activeElement;
+  const EDITABLE_TYPES = /^(text|search|url|tel|password|email|number)$/i;
+  const isEditable =
+    active instanceof HTMLTextAreaElement ||
+    (active instanceof HTMLInputElement && EDITABLE_TYPES.test(active.type || ""));
+
+  if (isEditable) {
+    try {
+      const { selectionStart: s, selectionEnd: e } = active;
+      if (typeof s === "number" && typeof e === "number" && e > s) {
+        return String(active.value || "").slice(s, e);
+      }
+    } catch (err) { /* some inputs throw on selection access */ }
+  }
+
+  const sel = window.getSelection ? String(window.getSelection() || "") : "";
+  if (sel.trim()) return sel;
+  return isEditable ? String(active.value || "") : "";
+}
+
+async function getSelectedText(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: grabTextFromPage
+    });
+    const last = results && results[results.length - 1];
+    return last && last.result ? String(last.result) : "";
+  } catch (e) {
+    return ""; // injection not allowed on this page
+  }
+}
+
+const canScript = (url) => /^https?:\/\//i.test(url || "");
 
 /* ---------- menu click ---------- */
-chrome.contextMenus.onClicked.addListener(function (info, tab) {
-  if (info.menuItemId !== MENU_ID || !tab || typeof tab.id !== "number") return;
 
-  var payload = {};
-  var key = STORE_PREFIX + tab.id;
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId !== MENU_ID || !tab || typeof tab.id !== "number") return;
 
   // Fast path: Chrome hands us the selection directly for "selection" menus.
   if (typeof info.selectionText === "string" && info.selectionText.trim()) {
-    payload[key] = { text: info.selectionText, ts: Date.now() };
-    cleanupPending();
-    chrome.storage.session.set(payload, function () {
-      if (chrome.runtime.lastError) { /* fall through anyway */ }
-      openDecoderTab(tab.id);
-    });
+    await storeAndOpen(tab.id, info.selectionText);
     return;
   }
 
   // Fallback: read the selection from the page ourselves (e.g. editable fields).
-  if (tab.url && /^https?:\/\//i.test(tab.url)) {
-    getSelectedText(tab.id, function (text) {
-      if (!text) {
-        openDecoderTab(tab.id); // decoder page will invite manual paste
-        return;
-      }
-      payload[key] = { text: text, ts: Date.now() };
-      cleanupPending();
-      chrome.storage.session.set(payload, function () {
-        openDecoderTab(tab.id);
-      });
-    });
+  if (canScript(tab.url)) {
+    const text = await getSelectedText(tab.id);
+    if (text) {
+      await storeAndOpen(tab.id, text);
+    } else {
+      await openDecoderTab(tab.id);
+    }
     return;
   }
 
   // Pages we cannot script (file:// without permission, chrome://, web store…)
-  openDecoderTab(tab.id);
+  await openDecoderTab(tab.id);
 });
 
 /* ---------- decoder page asks for its pending selection ---------- */
-chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.type !== "getPending") return; // ignore unrelated messages
-  var key = STORE_PREFIX + msg.tabId;
-  chrome.storage.session.get([key], function (items) {
-    var entry = items && items[key];
-    if (entry) chrome.storage.session.remove(key); // one-shot: don't leak old tokens
+  const key = pendingKey(msg.tabId);
+  store().get([key]).then((items) => {
+    const entry = items && items[key];
+    if (entry) return store().remove(key).then(() => entry); // one-shot: don't leak old tokens
+    return null;
+  }).then((entry) => {
     sendResponse(entry ? { text: entry.text } : {});
-  });
+  }).catch(() => sendResponse({}));
   return true; // keep the message channel open for the async response
 });

@@ -1,284 +1,322 @@
 /* decoder-ui.js — shared UI logic for the popup and the full-tab decoder page.
- * Requires window.TokenDecoder (from shared.js) to be loaded first.
+ * Requires window.TokenDecoder (shared.js), window.OrderTokenFormat (tokens.js)
+ * and window.DomHelpers (dom.js) to be loaded first.
+ *
+ * Structure:
+ *   render     — turns a decoded token into DOM (field cards, segment chips)
+ *   actions    — decode / copy / toast / clear / paste
+ *   storage    — popup-only "remember last token" persistence
+ *   boot       — context-menu handoff on decode.html, restore in the popup
  */
 (function () {
   "use strict";
 
-  var D = window.TokenDecoder;
-  var el = function (id) { return document.getElementById(id); };
+  const D = window.TokenDecoder;
+  const { createElement, copyToClipboard } = window.DomHelpers;
 
-  var inputEl = el("input");
-  var decodedEl = el("decoded");
-  var fieldsEl = el("fields");
-  var segmentsEl = el("segments");
-  var extraEl = el("extra");
-  var resultCard = el("resultCard");
-  var errorCard = el("errorCard");
-  var badgeEl = el("badge");
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    input: $("input"),
+    decoded: $("decoded"),
+    fields: $("fields"),
+    segments: $("segments"),
+    extra: $("extra"),
+    resultCard: $("resultCard"),
+    errorCard: $("errorCard"),
+    errMsg: $("errMsg"),
+    badge: $("badge"),
+    subtitle: $("subtitle"),
+    segDetails: $("segDetails"),
+    segCount: $("segCount"),
+    rawDetails: $("rawDetails"),
+    rawSummary: $("rawSummary")
+  };
 
   /* ---------- rendering ---------- */
-  function makeField(node, label, value, hl) {
-    var box = document.createElement("div");
-    box.className = "field";
-    box.title = "Click to copy";
-    var l = document.createElement("span");
-    l.className = "f-label";
-    l.textContent = label;
-    var v = document.createElement("span");
-    v.className = "f-value" + (hl ? " hl" : "");
-    v.textContent = value;
-    box.appendChild(l);
-    box.appendChild(v);
-    box.addEventListener("click", function () { copyText(value, label + " copied"); });
-    node.appendChild(box);
+
+  function makeField(label, value, highlight) {
+    return createElement("div", {
+      class: "field",
+      title: "Click to copy",
+      onClick: () => copyText(value, label + " copied")
+    }, [
+      createElement("span", { class: "f-label", text: label }),
+      createElement("span", { class: "f-value" + (highlight ? " hl" : ""), text: value })
+    ]);
+  }
+
+  // One segment block ("Segment N" heading + labelled value chips).
+  // `labels` may be empty — unknown positions then show as "[i]" extra chips.
+  function renderSegmentBox(container, fields, labels, heading) {
+    const chips = createElement("div", { class: "chips" }, fields.map((val, i) => {
+      const known = labels[i];
+      return createElement("span", {
+        class: "chip" + (known ? "" : " extra"),
+        title: "Click to copy",
+        onClick: () => copyText(val, "Copied")
+      }, [
+        createElement("b", { text: (known || `[${i}]`) + ": " }),
+        val === "" ? "(empty)" : val
+      ]);
+    }));
+
+    const box = createElement("div", { class: "seg" });
+    if (heading) box.appendChild(createElement("div", { class: "seg-h", text: heading }));
+    box.appendChild(chips);
+    container.appendChild(box);
   }
 
   function renderSegments(container, parsed) {
     container.innerHTML = "";
-    parsed.segments.forEach(function (fields, idx) {
-      var box = document.createElement("div");
-      box.className = "seg";
-      var head = document.createElement("div");
-      head.className = "seg-h";
-      head.textContent = "Segment " + (idx + 1);
-      box.appendChild(head);
-
-      var labels = D.labelsFor(idx);
-      var chips = document.createElement("div");
-      chips.className = "chips";
-      fields.forEach(function (val, i) {
-        var chip = document.createElement("span");
-        var known = labels[i];
-        chip.className = "chip" + (known ? "" : " extra");
-        var b = document.createElement("b");
-        b.textContent = (known || "[" + i + "]") + ": ";
-        chip.appendChild(b);
-        chip.appendChild(document.createTextNode(val === "" ? "(empty)" : val));
-        chip.title = "Click to copy";
-        chip.addEventListener("click", function () { copyText(val, "Copied"); });
-        chips.appendChild(chip);
-      });
-      box.appendChild(chips);
-      container.appendChild(box);
+    parsed.segments.forEach((fields, idx) => {
+      renderSegmentBox(container, fields, D.labelsFor(idx), "Segment " + (idx + 1));
     });
   }
 
+  // The "Extra / unparsed" block reuses the segment layout without headings.
+  function renderExtras(container, extras) {
+    container.innerHTML = "";
+    renderSegmentBox(container, extras.map((e) => e.value), [], null);
+  }
+
   function showError(message) {
-    resultCard.hidden = true;
-    errorCard.hidden = false;
-    el("errMsg").textContent = message;
+    els.resultCard.hidden = true;
+    els.errorCard.hidden = false;
+    els.errMsg.textContent = message;
+  }
+
+  function showResults() {
+    els.errorCard.hidden = true;
+    els.resultCard.hidden = false;
   }
 
   function render(decoded) {
-    var parsed = D.parseToken(decoded);
-    errorCard.hidden = true;
-    resultCard.hidden = false;
-    decodedEl.value = decoded;
+    const parsed = D.parseToken(decoded);
+    showResults();
+    els.decoded.value = decoded;
 
-    badgeEl.className = "badge " + (parsed.looksLikeToken ? "ok" : "warn");
-    badgeEl.textContent = parsed.looksLikeToken ? "valid base64 · ordertoken" : "valid base64 · not an ordertoken";
+    const isToken = parsed.looksLikeToken;
+    els.badge.className = "badge " + (isToken ? "ok" : "warn");
+    els.badge.textContent = isToken ? "valid base64 · ordertoken" : "valid base64 · not an ordertoken";
 
-    fieldsEl.innerHTML = "";
-    parsed.fields.forEach(function (f) { makeField(fieldsEl, f.label, f.value, f.hl); });
+    els.fields.innerHTML = "";
+    for (const f of parsed.fields) els.fields.appendChild(makeField(f.label, f.value, f.hl));
     if (!parsed.fields.length) {
-      var none = document.createElement("div");
-      none.className = "err-msg";
-      none.textContent = "No recognizable token fields were found. The raw decoded text above is still shown.";
-      fieldsEl.appendChild(none);
+      els.fields.appendChild(createElement("div", {
+        class: "err-msg",
+        text: "No recognizable token fields were found. The raw decoded text above is still shown."
+      }));
     }
 
-    var multi = parsed.segments.length > 2;   // segments 1 & 2 are already covered by the field cards
-    el("segDetails").hidden = !multi;
-    el("segCount").textContent = String(parsed.segments.length);
-    if (multi) renderSegments(segmentsEl, parsed);
+    // Segments 1 & 2 are already covered by the field cards; only show the
+    // full-segment list when there are more than two of them.
+    const multi = parsed.segments.length > 2;
+    els.segDetails.hidden = !multi;
+    els.segCount.textContent = String(parsed.segments.length);
+    if (multi) renderSegments(els.segments, parsed);
 
     // "Extra / unparsed" only lists leftovers from the primary segments.
-    var extrasAsSegments = [parsed.extras.map(function (e) { return e.value; })];
-    el("rawDetails").hidden = parsed.extras.length === 0;
-    el("rawSummary").textContent = "Extra / unparsed fields (" + parsed.extras.length + ")";
-    if (parsed.extras.length) renderSegments(extraEl, { segments: extrasAsSegments });
+    els.rawDetails.hidden = parsed.extras.length === 0;
+    els.rawSummary.textContent = "Extra / unparsed fields (" + parsed.extras.length + ")";
+    if (parsed.extras.length) renderExtras(els.extra, parsed.extras);
   }
 
   /* ---------- actions ---------- */
+
   function decode() {
     try {
-      var decoded = D.decodeBase64(inputEl.value);
-      render(decoded);
-      saveState();
+      render(D.decodeBase64(els.input.value));
     } catch (e) {
-      resultCard.hidden = true;
       showError(e.message || String(e));
-      saveState();
     }
+    saveState();
   }
 
-  function copyText(text, okMessage) {
-    if (!text) return;
-    var done = function () { toast(okMessage || "Copied"); };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done, function () { legacyCopy(text); done(); });
-    } else {
-      legacyCopy(text);
-      done();
-    }
-  }
-
-  function legacyCopy(text) {
-    var ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    try { document.execCommand("copy"); } catch (e) { /* ignore */ }
-    document.body.removeChild(ta);
-  }
-
-  var toastTimer = null;
+  let toastTimer = null;
   function toast(msg) {
-    var t = el("toast");
+    let t = $("toast");
     if (!t) {
-      t = document.createElement("div");
-      t.id = "toast";
-      t.className = "toast";
+      t = createElement("div", { id: "toast", class: "toast" });
       document.body.appendChild(t);
     }
     t.textContent = msg;
     t.classList.add("show");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.classList.remove("show"); }, 1400);
+    toastTimer = setTimeout(() => t.classList.remove("show"), 1400);
+  }
+
+  function copyText(text, okMessage) {
+    if (!text) return;
+    copyToClipboard(text).then(() => toast(okMessage || "Copied"));
+  }
+
+  function clearAll() {
+    els.input.value = "";
+    els.resultCard.hidden = true;
+    els.errorCard.hidden = true;
+    els.decoded.value = "";
+    els.fields.innerHTML = "";
+    saveState();
+    els.input.focus();
+  }
+
+  function loadSample() {
+    els.input.value = D.SAMPLE;
+    decode();
+  }
+
+  function pasteFromClipboard() {
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      navigator.clipboard.readText().then((txt) => {
+        els.input.value = txt;
+        decode();
+      }, () => {
+        toast("Clipboard access denied — use Ctrl+V");
+        els.input.focus();
+      });
+    } else {
+      toast("Use Ctrl+V to paste");
+      els.input.focus();
+    }
   }
 
   /* ---------- persistence (popup remembers last token; tab pages don't) ---------- */
-  var STORE_KEY = "lastToken";
-  var isTab = location.pathname.indexOf("decode.html") !== -1;
 
-  function hasStorage() {
+  const STORE_KEY = "lastToken";
+  const isTab = location.pathname.includes("decode.html");
+
+  function hasExtensionStorage() {
     try {
       return !isTab && typeof chrome !== "undefined" && chrome.storage && chrome.storage.local;
-    } catch (e) { return false; }
+    } catch (e) {
+      return false;
+    }
   }
 
   function saveState() {
     try {
-      if (hasStorage()) chrome.storage.local.set({ lastToken: inputEl.value });
-      else if (!isTab) localStorage.setItem(STORE_KEY, inputEl.value);
-    } catch (e) { /* ignore */ }
+      if (hasExtensionStorage()) chrome.storage.local.set({ [STORE_KEY]: els.input.value });
+      else if (!isTab) localStorage.setItem(STORE_KEY, els.input.value);
+    } catch (e) { /* storage unavailable — ignore */ }
   }
 
   function restoreState(cb) {
-    var apply = function (token) {
-      if (token) { inputEl.value = token; decode(); }
+    const apply = (token) => {
+      if (token) {
+        els.input.value = token;
+        decode();
+      }
       if (cb) cb();
     };
     try {
-      if (hasStorage()) chrome.storage.local.get([STORE_KEY], function (res) { apply(res && res[STORE_KEY]); });
-      else if (!isTab) apply(localStorage.getItem(STORE_KEY));
-      else if (cb) cb();
-    } catch (e) { if (cb) cb(); }
+      if (hasExtensionStorage()) {
+        chrome.storage.local.get([STORE_KEY], (res) => apply(res && res[STORE_KEY]));
+      } else if (!isTab) {
+        apply(localStorage.getItem(STORE_KEY));
+      } else if (cb) {
+        cb();
+      }
+    } catch (e) {
+      if (cb) cb();
+    }
   }
 
   /* ---------- wiring ---------- */
-  el("decodeBtn").addEventListener("click", decode);
-  el("sampleBtn").addEventListener("click", function () { inputEl.value = D.SAMPLE; decode(); });
-  el("clearBtn").addEventListener("click", function () {
-    inputEl.value = "";
-    resultCard.hidden = true;
-    errorCard.hidden = true;
-    decodedEl.value = "";
-    fieldsEl.innerHTML = "";
-    saveState();
-    inputEl.focus();
-  });
-  el("pasteBtn").addEventListener("click", function () {
-    if (navigator.clipboard && navigator.clipboard.readText) {
-      navigator.clipboard.readText().then(function (txt) {
-        inputEl.value = txt;
-        decode();
-      }, function () { toast("Clipboard access denied — use Ctrl+V"); inputEl.focus(); });
-    } else {
-      toast("Use Ctrl+V to paste");
-      inputEl.focus();
+
+  // The input placeholder shows the sample token (single source: tokens.js).
+  if (els.input.classList.contains("sample-placeholder")) {
+    els.input.placeholder = D.SAMPLE;
+  }
+
+  $("decodeBtn").addEventListener("click", decode);
+  $("sampleBtn").addEventListener("click", loadSample);
+  $("clearBtn").addEventListener("click", clearAll);
+  $("pasteBtn").addEventListener("click", pasteFromClipboard);
+
+  for (const btn of document.querySelectorAll("[data-copy-target]")) {
+    btn.addEventListener("click", () => copyText($(btn.dataset.copyTarget).value, "Decoded token copied"));
+  }
+
+  els.input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) {
+      ev.preventDefault();
+      decode();
     }
   });
 
-  Array.prototype.forEach.call(document.querySelectorAll("[data-copy-target]"), function (btn) {
-    btn.addEventListener("click", function () {
-      var target = el(btn.getAttribute("data-copy-target"));
-      copyText(target.value, "Decoded token copied");
-    });
-  });
-
-  inputEl.addEventListener("keydown", function (ev) {
-    if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); decode(); }
-  });
-
-  var debounceTimer = null;
-  inputEl.addEventListener("input", function () {
+  // Live-decode while typing once the input plausibly looks like base64.
+  let debounceTimer = null;
+  els.input.addEventListener("input", () => {
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(function () {
-      var raw = D.normalize(inputEl.value);
-      if (raw.length >= 8 && D.isBase64(raw)) decode();
-      else if (!raw) { resultCard.hidden = true; errorCard.hidden = true; }
+    debounceTimer = setTimeout(() => {
+      const raw = D.normalize(els.input.value);
+      if (raw.length >= 8 && D.isBase64(raw)) {
+        decode();
+      } else if (!raw) {
+        els.resultCard.hidden = true;
+        els.errorCard.hidden = true;
+      }
     }, 350);
   });
 
   /* ---------- boot ---------- */
+
   function setSubtitle(text) {
-    var s = el("subtitle");
-    if (s) s.textContent = text;
+    if (els.subtitle) els.subtitle.textContent = text;
   }
 
   function currentTabId(cb) {
     if (typeof chrome === "undefined" || !chrome.tabs || !chrome.tabs.query) return cb(null);
     try {
-      chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
-        cb(tabs && tabs[0] && typeof tabs[0].id === "number" ? tabs[0].id : null);
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const id = tabs && tabs[0] && tabs[0].id;
+        cb(typeof id === "number" ? id : null);
       });
-    } catch (e) { cb(null); }
+    } catch (e) {
+      cb(null);
+    }
   }
 
   function fetchPending(tabId, cb) {
     if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) return cb(null);
     try {
-      chrome.runtime.sendMessage({ type: "getPending", tabId: tabId }, function (resp) {
+      chrome.runtime.sendMessage({ type: "getPending", tabId }, (resp) => {
         cb(resp && resp.text ? resp.text : null);
       });
-    } catch (e) { cb(null); }
+    } catch (e) {
+      cb(null);
+    }
   }
 
   if (isTab) {
     // Opened by the context menu: pull the right-clicked selection, then decode.
-    var params = new URLSearchParams(location.search);
-    var tabIdFromUrl = params.get("tab");
-    var doneBoot = function () { restoreState(); inputEl.focus(); };
-
-    var consume = function (tabId) {
-      fetchPending(tabId, function (text) {
+    const finishBoot = () => {
+      restoreState();
+      els.input.focus();
+    };
+    const consume = (tabId) => {
+      fetchPending(tabId, (text) => {
         if (text && text.trim()) {
           setSubtitle("Right-clicked selection from the page:");
-          inputEl.value = text;
+          els.input.value = text;
           decode();
-          saveState();
-          doneBoot();
+          finishBoot();
         } else {
           setSubtitle("Paste or select a base64 ordertoken below.");
-          doneBoot();
+          finishBoot();
         }
       });
     };
 
+    const tabIdFromUrl = new URLSearchParams(location.search).get("tab");
     if (tabIdFromUrl !== null) {
       consume(Number(tabIdFromUrl));
     } else {
-      currentTabId(function (tid) {
-        if (tid !== null) consume(tid);
-        else doneBoot();
-      });
+      currentTabId((tid) => (tid !== null ? consume(tid) : finishBoot()));
     }
   } else {
-    // Popup behaviour (unchanged): remember the last token across sessions.
+    // Popup behaviour: remember the last token across sessions.
     restoreState();
-    inputEl.focus();
+    els.input.focus();
   }
 })();

@@ -5,7 +5,9 @@ const { JSDOM } = require("jsdom");
 
 const DIR = path.join(__dirname, "base64-order-token-decoder");
 const html = fs.readFileSync(path.join(DIR, "popup.html"), "utf8");
+const tokensJs = fs.readFileSync(path.join(DIR, "tokens.js"), "utf8");
 const sharedJs = fs.readFileSync(path.join(DIR, "shared.js"), "utf8");
+const domJs = fs.readFileSync(path.join(DIR, "dom.js"), "utf8");
 const uiJs = fs.readFileSync(path.join(DIR, "decoder-ui.js"), "utf8");
 
 const dom = new JSDOM(html, { runScripts: "outside-only", url: "chrome-extension://abc/popup.html" });
@@ -28,7 +30,9 @@ function check(name, cond, detail) {
   else { failures++; console.log("FAIL  " + name + (detail ? "  -> " + detail : "")); }
 }
 
+window.eval(tokensJs);
 window.eval(sharedJs);
+window.eval(domJs);
 window.eval(uiJs);
 
 const doc = window.document;
